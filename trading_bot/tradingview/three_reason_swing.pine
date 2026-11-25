@@ -1,0 +1,156 @@
+//@version=6
+// 3-Reason Swing Bot ($200 account) - TradingView version of trading_bot/
+// Same rules as the Python bot:
+//   * risk $5.50 per trade (stop loss), take profit +$10.50
+//   * one trade at a time (pyramiding = 0)
+//   * DAILY chart only - no scalping; stop >= 1 daily ATR
+//   * 3-reason rule from 3 different kinds of evidence, trend required
+//   * self-review veto: overextended / exhausted / level blocking TP / needs leverage
+// Use on a Daily chart. Open "Strategy Tester" to see the backtest.
+strategy("3-Reason Swing Bot ($200)", overlay = true, initial_capital = 200, currency = currency.USD,
+     pyramiding = 0, default_qty_type = strategy.fixed, process_orders_on_close = true,
+     commission_type = strategy.commission.percent, commission_value = 0.1,
+     margin_long = 100, margin_short = 100)
+
+// ---------- rules ----------
+riskUsd     = input.float(5.5,  "Risk per trade $ (must be 5-6)",   minval = 5.0, maxval = 6.0, step = 0.1)
+rewardUsd   = input.float(10.5, "Take profit $ (must be 9-12)",     minval = 9.0, maxval = 12.0, step = 0.1)
+capital     = input.float(200,  "Trading capital $")
+allowShorts = input.bool(true,  "Allow shorts")
+
+tfOk = timeframe.isdaily or timeframe.isweekly
+
+// ---------- indicators ----------
+e20  = ta.ema(close, 20)
+e50  = ta.ema(close, 50)
+e200 = ta.ema(close, 200)
+rsi  = ta.rsi(close, 14)
+atr  = ta.atr(14)
+[macdLine, sigLine, hist] = ta.macd(close, 12, 26, 9)
+volAvg = ta.sma(volume, 20)
+high20 = ta.highest(high, 20)[1]
+low20  = ta.lowest(low, 20)[1]
+rng    = high - low
+pos    = rng > 0 ? (close - low) / rng : 0.5
+volOk  = not na(volAvg) and volAvg > 0 and volume > 1.2 * volAvg
+
+// ---------- swing levels (for "is anything blocking my TP?") ----------
+var array<float> phV = array.new<float>()
+var array<int>   phB = array.new<int>()
+var array<float> plV = array.new<float>()
+var array<int>   plB = array.new<int>()
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+if not na(ph)
+    array.push(phV, ph)
+    array.push(phB, bar_index - 3)
+if not na(pl)
+    array.push(plV, pl)
+    array.push(plB, bar_index - 3)
+while array.size(phB) > 0 and bar_index - array.get(phB, 0) > 90
+    array.shift(phB)
+    array.shift(phV)
+while array.size(plB) > 0 and bar_index - array.get(plB, 0) > 90
+    array.shift(plB)
+    array.shift(plV)
+
+nearestAbove(array<float> vals, float lvl) =>
+    float best = na
+    if array.size(vals) > 0
+        for i = 0 to array.size(vals) - 1
+            v = array.get(vals, i)
+            if v > lvl and (na(best) or v < best)
+                best := v
+    best
+
+nearestBelow(array<float> vals, float lvl) =>
+    float best = na
+    if array.size(vals) > 0
+        for i = 0 to array.size(vals) - 1
+            v = array.get(vals, i)
+            if v < lvl and (na(best) or v > best)
+                best := v
+    best
+
+// ---------- LONG reasons ----------
+lTrend  = close > e200 and e50 > e200
+lPull   = (low <= e20 * 1.005 or low[1] <= e20[1] * 1.005 or low[2] <= e20[2] * 1.005) and close > e20
+lMom    = rsi >= 40 and rsi <= 65 and rsi > rsi[1]
+lMacd   = hist > hist[1] and hist[1] > hist[2]
+lCandle = close > open and pos >= 0.66
+lVol    = volOk and close > open
+lBrk    = close > high20
+lCount  = (lTrend ? 1 : 0) + (lPull ? 1 : 0) + (lMom ? 1 : 0) + (lMacd ? 1 : 0) + (lCandle ? 1 : 0) + (lVol ? 1 : 0) + (lBrk ? 1 : 0)
+lFam    = (lTrend ? 1 : 0) + (lPull ? 1 : 0) + (lBrk ? 1 : 0) + ((lMom or lMacd) ? 1 : 0) + ((lCandle or lVol) ? 1 : 0)
+
+// ---------- SHORT reasons ----------
+sTrend  = close < e200 and e50 < e200
+sPull   = (high >= e20 * 0.995 or high[1] >= e20[1] * 0.995 or high[2] >= e20[2] * 0.995) and close < e20
+sMom    = rsi >= 35 and rsi <= 60 and rsi < rsi[1]
+sMacd   = hist < hist[1] and hist[1] < hist[2]
+sCandle = close < open and pos <= 0.34
+sVol    = volOk and close < open
+sBrk    = close < low20
+sCount  = (sTrend ? 1 : 0) + (sPull ? 1 : 0) + (sMom ? 1 : 0) + (sMacd ? 1 : 0) + (sCandle ? 1 : 0) + (sVol ? 1 : 0) + (sBrk ? 1 : 0)
+sFam    = (sTrend ? 1 : 0) + (sPull ? 1 : 0) + (sBrk ? 1 : 0) + ((sMom or sMacd) ? 1 : 0) + ((sCandle or sVol) ? 1 : 0)
+
+// ---------- stops & sizing (stop 1-2.5 ATR beyond 5-day swing) ----------
+lDist = math.min(math.max(close - (ta.lowest(low, 5) - 0.2 * atr), atr), 2.5 * atr)
+sDist = math.min(math.max((ta.highest(high, 5) + 0.2 * atr) - close, atr), 2.5 * atr)
+lQty  = riskUsd / lDist
+sQty  = riskUsd / sDist
+lTp   = rewardUsd / lQty
+sTp   = rewardUsd / sQty
+
+// ---------- self-review (any FAIL = no trade) ----------
+notExt = math.abs(close - e20) / atr <= 2.5
+lRes   = nearestAbove(phV, close + 0.25 * atr)
+sSup   = nearestBelow(plV, close - 0.25 * atr)
+lPath  = na(lRes) or lRes >= close + lTp or (lRes - close) >= 0.5 * lTp
+sPath  = na(sSup) or sSup <= close - sTp or (close - sSup) >= 0.5 * sTp
+lAfford = lQty * close <= capital   // no leverage
+sAfford = sQty * close <= capital
+
+flat = strategy.position_size == 0
+lOk  = tfOk and flat and lTrend and lCount >= 3 and lFam >= 3 and notExt and rsi <= 72 and lPath and lAfford
+sOk  = tfOk and flat and allowShorts and sTrend and sCount >= 3 and sFam >= 3 and notExt and rsi >= 28 and sPath and sAfford and not lOk
+
+// ---------- orders + explanation ----------
+var float slLine = na
+var float tpLine = na
+fmt(x) => str.tostring(x, format.mintick)
+
+if lOk
+    slLine := close - lDist
+    tpLine := close + lTp
+    why = "LONG - why:\n" + (lTrend ? "• Uptrend (above 200 EMA, 50 > 200)\n" : "") + (lPull ? "• Pullback to 20 EMA & bounced\n" : "") +
+         (lMom ? "• RSI " + str.tostring(rsi, "#.0") + " rising\n" : "") + (lMacd ? "• MACD hist rising 2 days\n" : "") +
+         (lCandle ? "• Strong bullish candle\n" : "") + (lVol ? "• Volume > 1.2x avg\n" : "") + (lBrk ? "• 20-day breakout\n" : "") +
+         "Self-review: PASS\nSL " + fmt(slLine) + " (-$" + str.tostring(riskUsd) + ")  TP " + fmt(tpLine) + " (+$" + str.tostring(rewardUsd) + ")\nQty " + str.tostring(lQty, "#.######")
+    strategy.entry("Long", strategy.long, qty = lQty, comment = "3+ reasons")
+    strategy.exit("Long exit", "Long", stop = slLine, limit = tpLine)
+    label.new(bar_index, low, why, style = label.style_label_up, color = color.new(color.green, 15), textcolor = color.white, size = size.small)
+    alert(syminfo.ticker + " " + why, alert.freq_once_per_bar_close)
+
+if sOk
+    slLine := close + sDist
+    tpLine := close - sTp
+    why = "SHORT - why:\n" + (sTrend ? "• Downtrend (below 200 EMA, 50 < 200)\n" : "") + (sPull ? "• Rally into 20 EMA & rejected\n" : "") +
+         (sMom ? "• RSI " + str.tostring(rsi, "#.0") + " falling\n" : "") + (sMacd ? "• MACD hist falling 2 days\n" : "") +
+         (sCandle ? "• Strong bearish candle\n" : "") + (sVol ? "• Volume > 1.2x avg\n" : "") + (sBrk ? "• 20-day breakdown\n" : "") +
+         "Self-review: PASS\nSL " + fmt(slLine) + " (-$" + str.tostring(riskUsd) + ")  TP " + fmt(tpLine) + " (+$" + str.tostring(rewardUsd) + ")\nQty " + str.tostring(sQty, "#.######")
+    strategy.entry("Short", strategy.short, qty = sQty, comment = "3+ reasons")
+    strategy.exit("Short exit", "Short", stop = slLine, limit = tpLine)
+    label.new(bar_index, high, why, style = label.style_label_down, color = color.new(color.red, 15), textcolor = color.white, size = size.small)
+    alert(syminfo.ticker + " " + why, alert.freq_once_per_bar_close)
+
+// ---------- visuals ----------
+plot(e20,  "EMA 20",  color.new(color.orange, 0))
+plot(e50,  "EMA 50",  color.new(color.blue, 0))
+plot(e200, "EMA 200", color.new(color.purple, 0), 2)
+inTrade = strategy.position_size != 0 or lOk or sOk
+plot(inTrade ? slLine : na, "Stop loss",   color.red,   2, plot.style_linebr)
+plot(inTrade ? tpLine : na, "Take profit", color.green, 2, plot.style_linebr)
+
+if barstate.islast and not tfOk
+    label.new(bar_index, high, "Switch to the DAILY chart - this strategy does not scalp.", color = color.orange, textcolor = color.black)

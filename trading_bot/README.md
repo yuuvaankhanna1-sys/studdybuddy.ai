@@ -69,3 +69,12 @@ Edit `WATCHLIST`, `TIMEZONE` and `ALLOW_SHORTS` in `config.py`. It accepts any Y
 - **US stocks at 9:00 New York time** are before the 9:30 open, so the paper fill uses the latest price. Set the scan to 09:45 if you mostly trade US stocks.
 - A stop loss can't stop a **gap**. If the price jumps past your stop overnight, the loss can be a bit more than $6. The backtest models this.
 - No strategy wins every trade. At ~1.9 : 1 reward:risk, the break-even win rate is about 35%. Past results don't guarantee future results.
+
+## Practise on TradingView first
+`tradingview/three_reason_swing.pine` is the same strategy and the same rules in Pine Script.
+1. Open a **Daily** chart on TradingView (e.g. BTCUSD, ETHUSD, TSLA).
+2. Open **Pine Editor** at the bottom, paste the file, then click **Save** and **Add to chart**.
+3. **Strategy Tester** shows every past trade, the win rate and the P&L, starting from $200. Each entry has a label on the chart that lists its reasons.
+4. To practise live: right-click the chart, choose **Add alert**, and pick this strategy. When an alert says "LONG - why: ...", place that trade with the same SL and TP in **Trading Panel → Paper Trading**.
+
+TradingView doesn't let outside programs place orders, so the Pine script is for practice and alerts. The Python bot is the one that can trade automatically later.
