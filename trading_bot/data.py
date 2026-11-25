@@ -39,18 +39,32 @@ def _drop_unfinished_daily_bar(df: pd.DataFrame) -> pd.DataFrame:
 def _synthetic(symbol: str, n: int, freq: str) -> pd.DataFrame:
     seed = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
     rng = np.random.default_rng(seed)
-    base = 50 + seed % 500
+    fx = is_forex(symbol)
+    base = (0.6 + (seed % 100) / 100) if fx else 50 + seed % 500
+    vol_d = 0.006 if fx else 0.02  # forex moves ~0.6%/day
     # Regime-switching drift so there are trends to find
-    drift = np.repeat(rng.choice([-0.002, 0.0, 0.002], size=n // 40 + 1), 40)[:n]
-    rets = drift + rng.normal(0, 0.02, n)
+    drift = np.repeat(rng.choice([-1, 0, 1], size=n // 40 + 1), 40)[:n] * vol_d / 10
+    rets = drift + rng.normal(0, vol_d, n)
     close = base * np.exp(np.cumsum(rets))
-    open_ = np.r_[close[0], close[:-1]] * (1 + rng.normal(0, 0.003, n))
-    hi = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.008, n)))
-    lo = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.008, n)))
-    vol = rng.lognormal(13, 0.4, n)
+    open_ = np.r_[close[0], close[:-1]] * (1 + rng.normal(0, vol_d * 0.15, n))
+    hi = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, vol_d * 0.4, n)))
+    lo = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, vol_d * 0.4, n)))
+    vol = np.zeros(n) if fx else rng.lognormal(13, 0.4, n)  # Yahoo has no forex volume
     end = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)
     idx = pd.date_range(end=end, periods=n, freq=freq)
     return pd.DataFrame({"Open": open_, "High": hi, "Low": lo, "Close": close, "Volume": vol}, index=idx)
+
+
+def is_forex(symbol: str) -> bool:
+    return symbol.endswith("=X") and len(symbol) == 8
+
+
+def quote_currency(symbol: str) -> str:
+    return symbol[3:6] if is_forex(symbol) else "USD"
+
+
+def pip_size(symbol: str) -> float:
+    return 0.01 if "JPY" in symbol else 0.0001
 
 
 class MarketData:
@@ -87,6 +101,13 @@ class MarketData:
         if last.date() >= datetime.now(last.tzinfo or timezone.utc).date():
             return df.iloc[-1]
         return None
+
+    def quote_usd(self, symbol: str) -> float:
+        """USD value of 1 unit of the symbol's quote currency. EURUSD -> 1.0, AUDCHF -> CHF/USD rate."""
+        q = quote_currency(symbol)
+        if q == "USD" or self.source != "yfinance":
+            return 1.0
+        return self.price(f"{q}USD=X")
 
     def price(self, symbol: str) -> float:
         h = self.hourly(symbol, days=2)

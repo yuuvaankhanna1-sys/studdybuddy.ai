@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import config
 from .broker import PaperBroker
-from .data import MarketData
+from .data import MarketData, is_forex
 from .review import review
 from .risk import RiskGuard, RuleViolation
 from .strategy import evaluate
@@ -20,7 +20,10 @@ from .strategy import evaluate
 def backtest(symbol: str, source: str = "yfinance", years: int = 5, verbose: bool = True) -> dict:
     rules = config.rules_for_capital(config.STARTING_CAPITAL)
     guard = RiskGuard(rules)
-    df = MarketData(source).daily(symbol, years=years)
+    md = MarketData(source)
+    df = md.daily(symbol, years=years)
+    quote_usd = md.quote_usd(symbol)  # today's rate, used for the whole test (approximation)
+    step = config.FOREX_UNIT_STEP if is_forex(symbol) else None
     tmp = Path(tempfile.mkdtemp()) / "bt.json"
     broker = PaperBroker(tmp, rules.capital)
     skipped_rules = skipped_review = 0
@@ -35,7 +38,7 @@ def backtest(symbol: str, source: str = "yfinance", years: int = 5, verbose: boo
         setups, _ = evaluate(symbol, df.iloc[: i + 1], rules, config.ALLOW_SHORTS)
         for s in setups:
             try:
-                plan = guard.size(symbol, s.side, s.entry, s.stop)
+                plan = guard.size(symbol, s.side, s.entry, s.stop, quote_usd=quote_usd, qty_step=step)
             except RuleViolation:
                 skipped_rules += 1
                 continue
@@ -59,8 +62,8 @@ def backtest(symbol: str, source: str = "yfinance", years: int = 5, verbose: boo
     res = {
         "symbol": symbol, "trades": len(closed), "wins": len(wins),
         "win_rate": round(100 * len(wins) / len(closed), 1) if closed else 0.0,
-        "pnl": round(sum(t["pnl"] for t in closed), 2),
-        "worst_loss": min((t["pnl"] for t in closed), default=0.0),
+        "pnl": round(float(sum(t["pnl"] for t in closed)), 2),
+        "worst_loss": float(min((t["pnl"] for t in closed), default=0.0)),
         "max_drawdown": round(mdd, 2),
         "skipped_by_risk_rules": skipped_rules, "vetoed_by_self_review": skipped_review,
     }

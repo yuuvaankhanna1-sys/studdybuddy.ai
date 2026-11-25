@@ -19,7 +19,7 @@ import pandas as pd
 
 from . import config
 from .broker import PaperBroker
-from .data import MarketData
+from .data import MarketData, is_forex
 from .journal import Journal
 from .review import FAMILY, review
 from .risk import RiskGuard, RuleViolation
@@ -90,7 +90,9 @@ class Bot:
                 print("  " + n)
             for s in setups:
                 try:
-                    plan = self.guard.size(s.symbol, s.side, s.entry, s.stop)
+                    plan = self.guard.size(s.symbol, s.side, s.entry, s.stop,
+                                           quote_usd=self.data.quote_usd(sym),
+                                           qty_step=config.FOREX_UNIT_STEP if is_forex(sym) else None)
                 except RuleViolation as e:
                     self.journal.explain_skip(s, f"breaks a risk rule: {e}")
                     continue
@@ -146,7 +148,8 @@ class Bot:
         wins = sum(t["pnl"] > 0 for t in closed)
         print(f"Equity: ${st['equity']:,.2f}  (start ${self.rules.capital:,.2f})")
         print(f"Rules: risk ${self.rules.risk_min}-{self.rules.risk_max}, "
-              f"reward ${self.rules.reward_min}-{self.rules.reward_max}, 1 trade at a time, 3+ reasons")
+              f"reward ${self.rules.reward_min}-{self.rules.reward_max}, 1 trade at a time, 3+ reasons, "
+              f"max leverage {self.rules.max_leverage:g}x")
         print(f"Closed trades: {len(closed)}  wins: {wins}  P&L: ${sum(t['pnl'] for t in closed):+.2f}")
         p = st["position"]
         if p:

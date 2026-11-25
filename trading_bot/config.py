@@ -15,7 +15,9 @@ Rules (for a $200 account):
 If you change STARTING_CAPITAL, the $ limits scale proportionally
 (2.5%-3% risk, 4.5%-6% reward), so $200 gives exactly $5-6 / $9-12.
 """
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 STARTING_CAPITAL = 200.0
 
@@ -29,11 +31,20 @@ WATCH_INTERVAL_MIN = 60
 
 # What the bot is allowed to trade (Yahoo Finance tickers). Any asset class works:
 # crypto, ETFs, stocks, forex ("EURUSD=X"), commodities ("GC=F").
-WATCHLIST = [
-    "BTC-USD", "ETH-USD", "SOL-USD",
-    "SPY", "QQQ", "NVDA", "TSLA", "AAPL", "AMD",
-    "GLD",
-]
+WATCHLIST = ["AUDCHF=X", "GBPUSD=X", "EURUSD=X"]
+
+# --- Forex settings ---
+# A $200 account can't hold a forex position big enough for a sensible stop without
+# leverage. Leverage does NOT change the risk: the stop still caps the loss at $5-6.
+# 10 = position up to $2,000. (Typical retail limits: 1:30 UK/EU, 1:50 US.)
+MAX_LEVERAGE = 10.0
+
+# Smallest position step your broker allows, in units of the base currency:
+#   1     -> brokers that allow any size (e.g. OANDA)   - best for a $200 account
+#   1000  -> MT4/MT5 brokers, 0.01 lot (micro lot) minimum
+# With 1000-unit steps EURUSD only fits the $5-6 rule when the stop is 50-60 pips,
+# so many setups will be rejected. That's the rule working, not a bug.
+FOREX_UNIT_STEP = 1
 
 ALLOW_SHORTS = True
 
@@ -70,9 +81,10 @@ class RiskRules:
         assert self.max_open_trades == 1, "rule: only one trade at a time"
         assert self.min_reasons >= 3, "rule: at least 3 reasons per trade"
         assert self.min_stop_atr >= 1.0, "rule: no scalping (stop >= 1 daily ATR)"
+        assert 0 < self.max_leverage <= 50, "leverage must be between 0 and 50"
 
 
-def rules_for_capital(capital: float = STARTING_CAPITAL) -> RiskRules:
+def rules_for_capital(capital: float = STARTING_CAPITAL, max_leverage: float | None = None) -> RiskRules:
     """$200 -> risk $5-6, reward $9-12. Other sizes scale by the same percentages."""
     scale = capital / 200.0
     r = RiskRules(
@@ -81,6 +93,7 @@ def rules_for_capital(capital: float = STARTING_CAPITAL) -> RiskRules:
         risk_max=round(6.0 * scale, 2),
         reward_min=round(9.0 * scale, 2),
         reward_max=round(12.0 * scale, 2),
+        max_leverage=MAX_LEVERAGE if max_leverage is None else max_leverage,
     )
     r.validate()
     return r

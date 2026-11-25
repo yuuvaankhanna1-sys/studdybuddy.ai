@@ -64,7 +64,7 @@ class PaperBroker:
     def _close(self, price: float, why: str, when: datetime | None) -> dict:
         p = self.state["position"]
         sign = 1 if p["side"] == "long" else -1
-        pnl = round(sign * (price - p["entry"]) * p["qty"], 2)
+        pnl = round(float(sign * (price - p["entry"]) * p["qty"] * p.get("quote_usd", 1.0)), 2)
         trade = p | {"exit": price, "exit_reason": why, "pnl": pnl,
                      "closed_at": str(when or datetime.now(timezone.utc))}
         self.state["equity"] = round(self.state["equity"] + pnl, 2)

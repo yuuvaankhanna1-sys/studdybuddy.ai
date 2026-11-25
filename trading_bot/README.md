@@ -63,6 +63,18 @@ python -m unittest discover -s trading_bot/tests -t .  # prove the rules hold
 ```
 Edit `WATCHLIST`, `TIMEZONE` and `ALLOW_SHORTS` in `config.py`. It accepts any Yahoo Finance ticker: crypto, stocks, ETFs, forex (`EURUSD=X`), futures (`GC=F`).
 
+## Trading forex (AUDCHF, GBPUSD, EURUSD)
+The watchlist is set to `AUDCHF=X`, `GBPUSD=X` and `EURUSD=X`.
+- **Dollar risk stays $5–6 on every pair.** AUDCHF is priced in Swiss francs, so the bot converts CHF to USD before sizing.
+- **Leverage up to 10x** (`MAX_LEVERAGE`). With a $200 account, a normal 60–80 pip EURUSD stop needs a position of ~$800–900 to risk $5.50. Leverage only sets the position size; the stop still limits the loss to $5–6.
+- **Lot size (`FOREX_UNIT_STEP`) – check your broker.**
+  - `1` (default): brokers that allow any number of units, e.g. OANDA. This works well with $200.
+  - `1000`: MT4/MT5 brokers with a 0.01-lot minimum. One micro lot of EURUSD is about $0.10 per pip, so a $5–6 risk means the stop must be exactly 50–60 pips. In testing, almost every setup failed that, so the bot hardly trades. With a 0.01-lot broker, either add money so there's room to size, or accept very few trades.
+- Example journal line: `Forex: 786 units (0.008 lots) | SL 70 pips | TP 134 pips | leverage 4.3x on $200`.
+- Yahoo has no forex volume, so the "volume" reason is never used for these pairs. Trades need 3 of the other reasons.
+- Holding a trade overnight costs a small daily fee called swap or rollover. Neither the bot nor the backtest counts it.
+- In TradingView, set the **"Position size step"** input to match your broker (1 or 1000).
+
 ## Important notes
 - **Paper trading only for now.** Run it for a few weeks and read the journal before risking real money. To go live, add a broker class with the same methods as `PaperBroker`. Use bracket/OCO orders so the stop loss sits at the broker, not just in this script.
 - **Why $200 limits which markets qualify:** with no leverage, a $5.50 risk needs a stop at least ~2.75% away (5.50 / 200). Volatile markets like crypto, TSLA and NVDA fit easily. Calm ones like SPY often get rejected with "stop too tight for this account". That's the risk rule doing its job.

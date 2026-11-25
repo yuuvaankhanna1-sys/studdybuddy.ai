@@ -33,11 +33,11 @@ class TestRiskRules(unittest.TestCase):
                 continue
             self.assertTrue(5.0 <= p.risk_usd <= 6.0, p)
             self.assertTrue(9.0 <= p.reward_usd <= 12.0, p)
-            self.assertLessEqual(p.notional, 200.0)
+            self.assertLessEqual(p.notional, 200.0 * self.rules.max_leverage)
 
     def test_stop_too_tight_needs_leverage_is_rejected(self):
         with self.assertRaises(RuleViolation):
-            self.guard.size("X", "long", 100.0, 99.5)  # $0.50 stop -> $1100 position
+            self.guard.size("X", "long", 100.0, 99.95)  # $0.05 stop -> $11,000 position > 10x $200
 
     def test_wrong_side_stop_rejected(self):
         with self.assertRaises(RuleViolation):
@@ -55,6 +55,36 @@ class TestRiskRules(unittest.TestCase):
             RiskGuard(RiskRules(min_reasons=2))
         with self.assertRaises(AssertionError):
             RiskGuard(RiskRules(min_stop_atr=0.3))
+
+
+class TestForex(unittest.TestCase):
+    def setUp(self):
+        self.guard = RiskGuard(rules_for_capital(200))
+
+    def test_eurusd_70_pip_stop(self):
+        p = self.guard.size("EURUSD=X", "long", 1.0800, 1.0730, qty_step=1)
+        self.assertTrue(5 <= p.risk_usd <= 6 and 9 <= p.reward_usd <= 12)
+        self.assertLessEqual(p.notional, 2000)             # within 10x leverage
+        self.assertAlmostEqual((p.take_profit - p.entry) / 0.0001, 70 * 10.5 / 5.5, delta=1)
+
+    def test_audchf_converts_chf_to_usd(self):
+        chf_usd = 1.25  # 1 CHF = $1.25
+        p = self.guard.size("AUDCHF=X", "short", 0.5600, 0.5650, quote_usd=chf_usd, qty_step=1)
+        # loss in CHF = qty * 0.0050; in USD it must still be $5-6
+        self.assertAlmostEqual(p.qty * 0.0050 * chf_usd, p.risk_usd, places=1)
+        self.assertTrue(5 <= p.risk_usd <= 6)
+        b = PaperBroker(Path(tempfile.mkdtemp()) / "s.json", 200)
+        b.open_position(p, ["r"])
+        t = b.check_exit(high=0.5660, low=0.5640)
+        self.assertTrue(-6 <= t["pnl"] <= -5, t)
+
+    def test_micro_lot_step_respects_limits(self):
+        # 1000 units: a 70-pip EURUSD stop risks $7 -> must be rejected
+        with self.assertRaises(RuleViolation):
+            self.guard.size("EURUSD=X", "long", 1.0800, 1.0730, qty_step=1000)
+        # 55-pip stop -> exactly 1000 units, $5.50 risk -> allowed
+        p = self.guard.size("EURUSD=X", "long", 1.0800, 1.0745, qty_step=1000)
+        self.assertEqual(p.qty, 1000)
 
 
 class TestBroker(unittest.TestCase):
