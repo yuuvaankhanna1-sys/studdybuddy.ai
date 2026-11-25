@@ -29,9 +29,13 @@ class Journal:
         extra = ""
         if is_forex(plan.symbol):
             pip = pip_size(plan.symbol)
-            extra = (f"\nForex: {plan.qty:,.0f} units ({plan.qty / 100_000:.3f} lots) | "
+            widened = ""
+            if plan.stop_widened_from is not None:
+                widened = (f"\nStop widened from {plan.stop_widened_from:.5f} to {plan.stop:.5f} so the risk fits "
+                           f"$5-6 with 0.01-lot sizes (stops are only ever widened, never tightened).")
+            extra = (f"\nForex: {plan.qty / 100_000:.2f} lots ({plan.qty:,.0f} units) | "
                      f"SL {abs(plan.entry - plan.stop) / pip:.0f} pips | TP {abs(plan.take_profit - plan.entry) / pip:.0f} pips | "
-                     f"leverage {plan.notional / 200:.1f}x on $200")
+                     f"leverage {plan.notional / 200:.1f}x on $200{widened}")
         self._write(
             f"\n## {self._ts()} - OPENED {setup.side.upper()} {setup.symbol} ({setup.kind.replace('_', ' ')})\n"
             f"Why I took this trade:\n{reasons}\n"

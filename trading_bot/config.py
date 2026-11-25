@@ -6,7 +6,7 @@ Rules (for a $200 account):
   1. Risk per trade (stop loss)      : $5 - $6
   2. Profit target per trade (TP)    : $9 - $12
   3. Only ONE open trade at a time
-  4. No scalping: signals come from DAILY candles, stops are >= 1 daily ATR
+  4. 4-HOUR candles only (no scalping): stops are >= 1 ATR of the 4h chart
   5. Main scan once a day at 09:00; off-schedule only for a "huge move"
   6. 3-reason rule: at least 3 independent reasons, then a self-review
      ("devil's advocate") that can still veto the trade
@@ -26,25 +26,37 @@ TIMEZONE = "America/New_York"
 DAILY_SCAN_HOUR = 9
 DAILY_SCAN_MINUTE = 0
 
+# Timeframe: 4-hour candles ONLY. (Fixed - not a setting.)
+TIMEFRAME = "H4"
+
 # How often (minutes) to check the open trade and look for a huge move.
 WATCH_INTERVAL_MIN = 60
 
-# What the bot is allowed to trade (Yahoo Finance tickers). Any asset class works:
-# crypto, ETFs, stocks, forex ("EURUSD=X"), commodities ("GC=F").
-WATCHLIST = ["AUDCHF=X", "GBPUSD=X", "EURUSD=X"]
+# Where prices come from and where orders go:
+#   DATA_SOURCE: "mt5" (your MT5 terminal, Windows) or "yfinance" (free, any computer)
+#   BROKER:      "paper" (simulated - start here) or "mt5" (sends real orders with SL/TP to MT5;
+#                use a DEMO account first)
+DATA_SOURCE = "yfinance"
+BROKER = "paper"
+# Some brokers add a suffix to symbol names in MT5, e.g. "GBPUSDm" or "GBPUSD.r" -> set "m" or ".r"
+MT5_SYMBOL_SUFFIX = ""
+
+# What the bot is allowed to trade (MT5-style names).
+WATCHLIST = ["AUDCHF", "GBPUSD", "EURUSD"]
 
 # --- Forex settings ---
 # A $200 account can't hold a forex position big enough for a sensible stop without
 # leverage. Leverage does NOT change the risk: the stop still caps the loss at $5-6.
-# 10 = position up to $2,000. (Typical retail limits: 1:30 UK/EU, 1:50 US.)
-MAX_LEVERAGE = 10.0
+# 30 = position up to $6,000. On 4h candles stops are ~15-60 pips, so positions of
+# $1,000-$4,000 are normal. Your broker's margin must allow it (1:30 or more).
+MAX_LEVERAGE = 30.0
 
 # Smallest position step your broker allows, in units of the base currency:
-#   1     -> brokers that allow any size (e.g. OANDA)   - best for a $200 account
-#   1000  -> MT4/MT5 brokers, 0.01 lot (micro lot) minimum
-# With 1000-unit steps EURUSD only fits the $5-6 rule when the stop is 50-60 pips,
-# so many setups will be rejected. That's the rule working, not a bug.
-FOREX_UNIT_STEP = 1
+#   1000  -> MT4/MT5 brokers, 0.01 lot minimum (default)
+#   1     -> brokers that allow any size (e.g. OANDA)
+# With 0.01-lot steps the bot picks 0.01/0.02/0.03... so risk lands in $5-6, widening the
+# stop slightly if needed (never tightening it). With BROKER="mt5" the real step is read from MT5.
+FOREX_UNIT_STEP = 1000
 
 ALLOW_SHORTS = True
 
@@ -60,7 +72,7 @@ class RiskRules:
     min_reasons: int = 3
     # Position value may not exceed capital * max_leverage. 1.0 = no leverage.
     max_leverage: float = 1.0
-    # Anti-scalping: stop must be at least this many DAILY ATRs away.
+    # Anti-scalping: stop must be at least this many ATRs (of the 4h chart) away.
     min_stop_atr: float = 1.0
     max_stop_atr: float = 2.5
     qty_decimals: int = 6  # fractional quantity precision

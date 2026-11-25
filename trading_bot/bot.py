@@ -1,11 +1,13 @@
 """
-Rule-based swing trading bot (paper trading).
+Rule-based swing trading bot - 4-hour candles only.
 
-  python -m trading_bot.bot run        # run forever: 9am daily scan + hourly watch
-  python -m trading_bot.bot scan       # do the daily scan right now
+  python -m trading_bot.bot run        # run forever: 9am scan + hourly watch
+  python -m trading_bot.bot scan       # do the 9am scan right now
   python -m trading_bot.bot watch      # manage open trade + look for a huge move now
   python -m trading_bot.bot status     # show account and open trade
-  python -m trading_bot.bot backtest --symbol BTC-USD
+  python -m trading_bot.bot backtest --symbol GBPUSD
+
+Add --broker mt5 --source mt5 to trade through your MetaTrader 5 terminal (Windows).
 """
 from __future__ import annotations
 
@@ -29,11 +31,17 @@ HERE = Path(__file__).parent
 
 
 class Bot:
-    def __init__(self, source: str = "yfinance", state: str | None = None, journal: str | None = None):
+    def __init__(self, source: str | None = None, state: str | None = None, journal: str | None = None,
+                 broker: str | None = None):
         self.rules = config.rules_for_capital(config.STARTING_CAPITAL)
         self.guard = RiskGuard(self.rules)
-        self.data = MarketData(source)
-        self.broker = PaperBroker(state or HERE / "state" / "paper_state.json", self.rules.capital)
+        self.data = MarketData(source or config.DATA_SOURCE)
+        self.broker_kind = broker or config.BROKER
+        if self.broker_kind == "mt5":
+            from .mt5_link import MT5Broker
+            self.broker = MT5Broker(state or HERE / "state" / "mt5_state.json", self.rules.capital)
+        else:
+            self.broker = PaperBroker(state or HERE / "state" / "paper_state.json", self.rules.capital)
         self.journal = Journal(journal or HERE / "journal" / "trades.md")
         self.tz = ZoneInfo(config.TIMEZONE)
 
@@ -42,8 +50,13 @@ class Bot:
         p = self.broker.position
         if not p:
             return
+        if hasattr(self.broker, "sync"):  # MT5 closes at SL/TP by itself; just record the result
+            trade = self.broker.sync()
+            if trade:
+                self.journal.closed(trade, self.broker.state["equity"])
+            return
         try:
-            bars = self.data.hourly(p["symbol"], days=7)
+            bars = self.data.bars(p["symbol"], n=200, completed_only=False)
         except Exception as e:  # network hiccup: try again next cycle
             self.journal.note(f"could not fetch {p['symbol']} to manage trade: {e}")
             return
@@ -60,10 +73,20 @@ class Bot:
                 self.journal.closed(trade, self.broker.state["equity"])
                 return
 
+    def _lot_step(self, sym: str) -> tuple[float | None, float | None]:
+        """Broker size step in units. MT5 tells us exactly; otherwise use config."""
+        if self.broker_kind == "mt5" or self.data.source == "mt5":
+            from .mt5_link import lot_info
+            _, step, vmin = lot_info(sym)
+            return step, vmin
+        if is_forex(sym):
+            return config.FOREX_UNIT_STEP, config.FOREX_UNIT_STEP
+        return None, None
+
     # ---------- scanning ----------
     def scan(self, huge_move_only: bool = False) -> None:
         self.manage_position()
-        label = "huge-move watch" if huge_move_only else "daily 9am scan"
+        label = "huge-move watch (4h)" if huge_move_only else "9am scan (4h candles)"
         if self.broker.open_positions():
             p = self.broker.position
             if not huge_move_only:
@@ -73,16 +96,16 @@ class Bot:
         candidates = []
         for sym in config.WATCHLIST:
             try:
-                daily = self.data.daily(sym)
-                today = price = None
+                bars = self.data.bars(sym)
+                forming = price = None
                 if huge_move_only:
-                    today = self.data.today_bar(sym)
-                    if today is None:
+                    forming = self.data.forming_bar(sym)
+                    if forming is None:
                         continue
-                    price = float(today.Close)
-                elif self.data.source == "yfinance":
+                    price = float(forming.Close)
+                elif self.data.source in ("yfinance", "mt5"):
                     price = self.data.price(sym)
-                setups, notes = evaluate(sym, daily, self.rules, config.ALLOW_SHORTS, today=today, live_price=price)
+                setups, notes = evaluate(sym, bars, self.rules, config.ALLOW_SHORTS, today=forming, live_price=price)
             except Exception as e:
                 print(f"  {sym}: data error ({e}) - skipped")
                 continue
@@ -90,9 +113,10 @@ class Bot:
                 print("  " + n)
             for s in setups:
                 try:
+                    step, min_qty = self._lot_step(sym)
                     plan = self.guard.size(s.symbol, s.side, s.entry, s.stop,
-                                           quote_usd=self.data.quote_usd(sym),
-                                           qty_step=config.FOREX_UNIT_STEP if is_forex(sym) else None)
+                                           quote_usd=self.data.quote_usd(sym), qty_step=step, min_qty=min_qty,
+                                           max_stop_dist=self.rules.max_stop_atr * s.atr)
                 except RuleViolation as e:
                     self.journal.explain_skip(s, f"breaks a risk rule: {e}")
                     continue
@@ -104,7 +128,7 @@ class Bot:
 
         if not candidates:
             if not huge_move_only:
-                self.journal.note(f"{label}: no setup passed the 3-reason rule + self-review. No trade today.")
+                self.journal.note(f"{label}: no setup passed the 3-reason rule + self-review. No trade.")
             return
 
         # Best setup = most independent reasons, then most reasons, then cleanest review.
@@ -122,7 +146,7 @@ class Bot:
 
     # ---------- scheduler ----------
     def run_forever(self) -> None:
-        print(f"Bot running. Daily scan {config.DAILY_SCAN_HOUR:02d}:{config.DAILY_SCAN_MINUTE:02d} "
+        print(f"Bot running on 4h candles. Scan {config.DAILY_SCAN_HOUR:02d}:{config.DAILY_SCAN_MINUTE:02d} "
               f"{config.TIMEZONE}, watch every {config.WATCH_INTERVAL_MIN} min. Ctrl+C to stop.")
         last_watch = datetime.min.replace(tzinfo=timezone.utc)
         while True:
@@ -153,8 +177,9 @@ class Bot:
         print(f"Closed trades: {len(closed)}  wins: {wins}  P&L: ${sum(t['pnl'] for t in closed):+.2f}")
         p = st["position"]
         if p:
-            print(f"OPEN: {p['side']} {p['qty']} {p['symbol']} @ {p['entry']:,.4f} "
-                  f"SL {p['stop']:,.4f} TP {p['take_profit']:,.4f}")
+            print(f"OPEN: {p['side']} {p['qty'] / 100_000 if is_forex(p['symbol']) else p['qty']:g}"
+                  f"{' lots' if is_forex(p['symbol']) else ''} {p['symbol']} @ {p['entry']:,.5f} "
+                  f"SL {p['stop']:,.5f} TP {p['take_profit']:,.5f}")
             for r in p["reasons"]:
                 print(f"   - {r}")
         else:
@@ -164,15 +189,16 @@ class Bot:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["run", "scan", "watch", "status", "backtest"])
-    ap.add_argument("--source", default="yfinance", choices=["yfinance", "csv", "synthetic"])
-    ap.add_argument("--symbol", default="BTC-USD", help="backtest symbol")
+    ap.add_argument("--source", default=config.DATA_SOURCE, choices=["mt5", "yfinance", "csv", "synthetic"])
+    ap.add_argument("--broker", default=config.BROKER, choices=["paper", "mt5"])
+    ap.add_argument("--symbol", default="GBPUSD", help="backtest symbol")
     args = ap.parse_args()
 
     if args.command == "backtest":
         from .backtest import backtest
         backtest(args.symbol, args.source)
         return
-    bot = Bot(args.source)
+    bot = Bot(args.source, broker=args.broker)
     {"run": bot.run_forever, "scan": bot.scan, "watch": lambda: bot.scan(huge_move_only=True),
      "status": bot.status}[args.command]()
 

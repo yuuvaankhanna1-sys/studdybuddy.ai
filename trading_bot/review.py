@@ -53,7 +53,7 @@ def review(setup: Setup, plan: TradePlan, rules, now: datetime | None = None) ->
     # 2. Not a scalp
     stop_atr = abs(plan.entry - plan.stop) / setup.atr
     c.append((stop_atr >= rules.min_stop_atr - 1e-9,
-              f"Not a scalp: stop is {stop_atr:.2f} daily ATRs away (min {rules.min_stop_atr})."))
+              f"Not a scalp: stop is {stop_atr:.2f} ATRs (4h) away (min {rules.min_stop_atr})."))
 
     # 3. Not chasing an overextended move
     ext = abs(plan.entry - ctx["ema20"]) / setup.atr
@@ -81,6 +81,6 @@ def review(setup: Setup, plan: TradePlan, rules, now: datetime | None = None) ->
     # 7. Fresh data
     now = now or datetime.now(timezone.utc)
     age = (pd.Timestamp(now).date() - pd.Timestamp(ctx["last_bar"]).date()).days
-    c.append((age <= 5, f"Data is fresh: last completed candle {ctx['last_bar']} ({age} day(s) old)."))
+    c.append((age <= 4, f"Data is fresh: last completed 4h candle {ctx['last_bar'][:16]} ({age} day(s) old, weekends allowed)."))
 
     return Review(approved=all(ok for ok, _ in c), checks=c)

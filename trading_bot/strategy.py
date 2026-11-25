@@ -1,20 +1,20 @@
 """
-Strategy: "Trend Pullback + Confluence" on DAILY candles (swing trading, not scalping).
+Strategy: "Trend Pullback + Confluence" on 4-HOUR candles only (swing trading, not scalping).
 
 The bot does not trade on one signal. It lists every reason FOR the trade.
 A trade is only considered if:
-  * it has an ANCHOR reason (trend alignment for the daily strategy, or a
+  * it has an ANCHOR reason (trend alignment for the 4h strategy, or a
     confirmed huge move / breakout for off-schedule trades), and
   * it has at least 3 reasons in total (the 3-reason rule).
 
 Long reasons (shorts are the mirror image):
   1. TREND      price > 200 EMA and 50 EMA > 200 EMA               (anchor)
-  2. PULLBACK   price dipped to the 20 EMA in the last 3 days and closed back above it
+  2. PULLBACK   price dipped to the 20 EMA in the last 3 candles and closed back above it
   3. MOMENTUM   RSI 40-65 and rising (strength returning, not overbought)
-  4. MACD       MACD histogram rising for 2 days
+  4. MACD       MACD histogram rising for 2 candles
   5. CANDLE     strong close: green candle closing in the top third of its range
-  6. VOLUME     volume above 1.2x its 20-day average
-  7. BREAKOUT   close above the prior 20-day high
+  6. VOLUME     tick volume above 1.2x its 20-candle average
+  7. BREAKOUT   close above the prior 20-candle high
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class Reason:
 class Setup:
     symbol: str
     side: str            # "long" | "short"
-    kind: str            # "daily_strategy" | "huge_move"
+    kind: str            # "strategy_4h" | "huge_move"
     entry: float
     stop: float
     atr: float
@@ -56,7 +56,7 @@ def _sign(side: str) -> int:
 
 
 def _stop(df: pd.DataFrame, side: str, entry: float, atr: float, min_atr: float, max_atr: float) -> float:
-    """Stop beyond the last 5 days' swing low/high, clamped to 1-2.5 daily ATR."""
+    """Stop beyond the last 5 candles' swing low/high, clamped to 1-2.5 ATR (4h)."""
     if side == "long":
         dist = entry - (df["Low"].iloc[-5:].min() - 0.2 * atr)
     else:
@@ -77,7 +77,7 @@ def swing_levels(d: pd.DataFrame, entry: float, atr: float, lookback: int = 90, 
     return (float(above.min()) if len(above) else None, float(below.max()) if len(below) else None)
 
 
-def daily_reasons(d: pd.DataFrame, side: str, price: float) -> list[Reason]:
+def strategy_reasons(d: pd.DataFrame, side: str, price: float) -> list[Reason]:
     row, prev, prev2 = d.iloc[-1], d.iloc[-2], d.iloc[-3]
     last3 = d.iloc[-3:]
     out: list[Reason] = []
@@ -91,9 +91,9 @@ def daily_reasons(d: pd.DataFrame, side: str, price: float) -> list[Reason]:
 
     # 2 PULLBACK to 20 EMA and rejection
     if long and (last3.Low <= last3.ema20 * 1.005).any() and row.Close > row.ema20:
-        out.append(Reason("pullback", f"Pulled back to the 20 EMA ({_f(row.ema20)}) in the last 3 days and closed back above it."))
+        out.append(Reason("pullback", f"Pulled back to the 20 EMA ({_f(row.ema20)}) in the last 3 candles (4h) and closed back above it."))
     if not long and (last3.High >= last3.ema20 * 0.995).any() and row.Close < row.ema20:
-        out.append(Reason("pullback", f"Rallied into the 20 EMA ({_f(row.ema20)}) in the last 3 days and closed back below it."))
+        out.append(Reason("pullback", f"Rallied into the 20 EMA ({_f(row.ema20)}) in the last 3 candles (4h) and closed back below it."))
 
     # 3 MOMENTUM
     if long and 40 <= row.rsi <= 65 and row.rsi > prev.rsi:
@@ -103,61 +103,61 @@ def daily_reasons(d: pd.DataFrame, side: str, price: float) -> list[Reason]:
 
     # 4 MACD
     if long and row.macd_hist > prev.macd_hist > prev2.macd_hist:
-        out.append(Reason("macd", "MACD histogram has risen 2 days in a row (momentum turning up)."))
+        out.append(Reason("macd", "MACD histogram has risen 2 candles in a row (momentum turning up)."))
     if not long and row.macd_hist < prev.macd_hist < prev2.macd_hist:
-        out.append(Reason("macd", "MACD histogram has fallen 2 days in a row (momentum turning down)."))
+        out.append(Reason("macd", "MACD histogram has fallen 2 candles in a row (momentum turning down)."))
 
     # 5 CANDLE
     rng = row.High - row.Low
     if rng > 0:
         pos = (row.Close - row.Low) / rng
         if long and row.Close > row.Open and pos >= 0.66:
-            out.append(Reason("candle", f"Strong bullish candle: closed in the top {100 - pos * 100:.0f}% of the day's range."))
+            out.append(Reason("candle", f"Strong bullish candle: closed in the top {100 - pos * 100:.0f}% of the candle's range."))
         if not long and row.Close < row.Open and pos <= 0.34:
-            out.append(Reason("candle", f"Strong bearish candle: closed in the bottom {pos * 100:.0f}% of the day's range."))
+            out.append(Reason("candle", f"Strong bearish candle: closed in the bottom {pos * 100:.0f}% of the candle's range."))
 
     # 6 VOLUME (skipped automatically for instruments with no volume data, e.g. forex)
     if row.vol_avg and row.vol_avg > 0 and row.Volume > 1.2 * row.vol_avg:
         if (long and row.Close > row.Open) or (not long and row.Close < row.Open):
-            out.append(Reason("volume", f"Volume {row.Volume / row.vol_avg:.1f}x its 20-day average backs the move."))
+            out.append(Reason("volume", f"Volume {row.Volume / row.vol_avg:.1f}x its 20-candle average backs the move."))
 
     # 7 BREAKOUT
     if long and row.Close > row.high20:
-        out.append(Reason("breakout", f"Closed above the prior 20-day high ({_f(row.high20)})."))
+        out.append(Reason("breakout", f"Closed above the prior 20-candle high ({_f(row.high20)})."))
     if not long and row.Close < row.low20:
-        out.append(Reason("breakout", f"Closed below the prior 20-day low ({_f(row.low20)})."))
+        out.append(Reason("breakout", f"Closed below the prior 20-candle low ({_f(row.low20)})."))
 
     return out
 
 
 def huge_move_reasons(d: pd.DataFrame, today: pd.Series, side: str, price: float) -> list[Reason]:
-    """Off-schedule check. `d` = completed daily bars, `today` = in-progress daily candle."""
+    """Off-schedule check. `d` = completed 4h candles, `today` = the 4h candle still forming."""
     row = d.iloc[-1]
     move_atr = (price - row.Close) / row.atr
     long = side == "long"
     out: list[Reason] = []
 
     if (long and move_atr >= 1.5) or (not long and move_atr <= -1.5):
-        out.append(Reason("huge_move", f"Huge move: price is {move_atr:+.1f} daily ATRs from yesterday's close."))
+        out.append(Reason("huge_move", f"Huge move: price is {move_atr:+.1f} ATRs (4h) from the last candle's close, in one candle."))
     if long and price > row.high20:
-        out.append(Reason("breakout", f"Breaking above the 20-day high ({_f(row.high20)})."))
+        out.append(Reason("breakout", f"Breaking above the 20-candle high ({_f(row.high20)})."))
     if not long and price < row.low20:
-        out.append(Reason("breakout", f"Breaking below the 20-day low ({_f(row.low20)})."))
+        out.append(Reason("breakout", f"Breaking below the 20-candle low ({_f(row.low20)})."))
     if (long and row.ema50 > row.ema200) or (not long and row.ema50 < row.ema200):
         out.append(Reason("trend", "Move is in the direction of the bigger trend (50 vs 200 EMA)."))
     if row.vol_avg and row.vol_avg > 0 and today is not None and today.Volume > row.vol_avg:
-        out.append(Reason("volume", f"Today's volume already {today.Volume / row.vol_avg:.1f}x the daily average."))
+        out.append(Reason("volume", f"This candle's volume already {today.Volume / row.vol_avg:.1f}x the average."))
     if (long and row.rsi < 70) or (not long and row.rsi > 30):
-        out.append(Reason("room", f"RSI was {row.rsi:.1f} yesterday, so there's room to run (not already exhausted)."))
+        out.append(Reason("room", f"RSI was {row.rsi:.1f} at the last close, so there's room to run (not already exhausted)."))
     return out
 
 
-def evaluate(symbol: str, daily: pd.DataFrame, rules, allow_shorts: bool = True,
+def evaluate(symbol: str, bars: pd.DataFrame, rules, allow_shorts: bool = True,
              today: pd.Series | None = None, live_price: float | None = None) -> tuple[list[Setup], list[str]]:
     """Return (candidate setups, notes about near-misses)."""
-    if len(daily) < 210:
-        return [], [f"{symbol}: not enough history ({len(daily)} bars, need 210)."]
-    d = add_indicators(daily)
+    if len(bars) < 210:
+        return [], [f"{symbol}: not enough history ({len(bars)} candles, need 210)."]
+    d = add_indicators(bars)
     row = d.iloc[-1]
     huge = today is not None and live_price is not None
     sides = ["long", "short"] if allow_shorts else ["long"]
@@ -169,9 +169,9 @@ def evaluate(symbol: str, daily: pd.DataFrame, rules, allow_shorts: bool = True,
             anchor_ok = {"huge_move", "breakout"} <= {r.key for r in reasons}
             entry, kind = live_price, "huge_move"
         else:
-            reasons = daily_reasons(d, side, row.Close)
+            reasons = strategy_reasons(d, side, row.Close)
             anchor_ok = any(r.key == "trend" for r in reasons)
-            entry, kind = (live_price or float(row.Close)), "daily_strategy"
+            entry, kind = (live_price or float(row.Close)), "strategy_4h"
 
         if not reasons:
             continue
@@ -185,7 +185,7 @@ def evaluate(symbol: str, daily: pd.DataFrame, rules, allow_shorts: bool = True,
         res, sup = swing_levels(d, entry, float(row.atr))
         context = {
             "rsi": float(row.rsi), "ema20": float(row.ema20), "atr": float(row.atr),
-            "resistance": res, "support": sup, "last_bar": str(d.index[-1].date()),
+            "resistance": res, "support": sup, "last_bar": str(d.index[-1]),
         }
         setups.append(Setup(symbol, side, kind, float(entry), float(stop), float(row.atr), reasons, context))
     return setups, notes

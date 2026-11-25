@@ -3,29 +3,29 @@
 // Same rules as the Python bot:
 //   * risk $5.50 per trade (stop loss), take profit +$10.50
 //   * one trade at a time (pyramiding = 0)
-//   * DAILY chart only - no scalping; stop >= 1 daily ATR
+//   * 4-HOUR chart only (H4) - no scalping; stop >= 1 ATR of the 4h chart
 //   * 3-reason rule from 3 different kinds of evidence, trend required
 //   * self-review veto: overextended / exhausted / level blocking TP / needs leverage
-// Use on a Daily chart (EURUSD, GBPUSD, AUDCHF...). Open "Strategy Tester" to see the backtest.
+// Use on a 4h chart (EURUSD, GBPUSD, AUDCHF...). Open "Strategy Tester" to see the backtest.
 // Forex: P&L is converted to USD (e.g. CHF -> USD for AUDCHF), sizes rounded to your lot step.
 strategy("3-Reason Swing Bot ($200)", overlay = true, initial_capital = 200, currency = currency.USD,
      pyramiding = 0, default_qty_type = strategy.fixed, process_orders_on_close = true,
      commission_type = strategy.commission.percent, commission_value = 0.1,
-     margin_long = 10, margin_short = 10)   // 10% margin = up to 10x leverage (needed for forex on $200)
+     margin_long = 3.33, margin_short = 3.33)   // up to 30x leverage (4h forex stops on $200 need it)
 
 // ---------- rules ----------
 riskUsd     = input.float(5.5,  "Risk per trade $ (must be 5-6)",   minval = 5.0, maxval = 6.0, step = 0.1)
 rewardUsd   = input.float(10.5, "Take profit $ (must be 9-12)",     minval = 9.0, maxval = 12.0, step = 0.1)
 capital     = input.float(200,  "Trading capital $")
 allowShorts = input.bool(true,  "Allow shorts")
-maxLev      = input.float(10,   "Max leverage (position <= capital x this)", minval = 1, maxval = 50)
-unitStep    = input.float(1,    "Position size step (units). 1 = any size (OANDA), 1000 = 0.01 lot (MT4/MT5)", minval = 0.000001)
+maxLev      = input.float(30,   "Max leverage (position <= capital x this)", minval = 1, maxval = 50)
+unitStep    = input.float(1000, "Position size step (units). 1000 = 0.01 lot (MT4/MT5), 1 = any size (OANDA)", minval = 0.000001)
 
 // USD value of one unit of the quote currency (1 for EURUSD/GBPUSD, CHF->USD for AUDCHF)
 quoteUsd = syminfo.currency == "USD" ? 1.0 : request.currency_rate(syminfo.currency, "USD")
 pip      = syminfo.mintick * 10
 
-tfOk = timeframe.isdaily or timeframe.isweekly
+tfOk = timeframe.period == "240"   // 4-hour candles only
 
 // ---------- indicators ----------
 e20  = ta.ema(close, 20)
@@ -101,11 +101,38 @@ sBrk    = close < low20
 sCount  = (sTrend ? 1 : 0) + (sPull ? 1 : 0) + (sMom ? 1 : 0) + (sMacd ? 1 : 0) + (sCandle ? 1 : 0) + (sVol ? 1 : 0) + (sBrk ? 1 : 0)
 sFam    = (sTrend ? 1 : 0) + (sPull ? 1 : 0) + (sBrk ? 1 : 0) + ((sMom or sMacd) ? 1 : 0) + ((sCandle or sVol) ? 1 : 0)
 
-// ---------- stops & sizing (stop 1-2.5 ATR beyond 5-day swing) ----------
-lDist = math.min(math.max(close - (ta.lowest(low, 5) - 0.2 * atr), atr), 2.5 * atr)
-sDist = math.min(math.max((ta.highest(high, 5) + 0.2 * atr) - close, atr), 2.5 * atr)
-lQty  = math.floor(riskUsd / (lDist * quoteUsd) / unitStep) * unitStep
-sQty  = math.floor(riskUsd / (sDist * quoteUsd) / unitStep) * unitStep
+// ---------- stops & sizing (stop 1-2.5 ATR beyond the 5-candle swing) ----------
+lDist0 = math.min(math.max(close - (ta.lowest(low, 5) - 0.2 * atr), atr), 2.5 * atr)
+sDist0 = math.min(math.max((ta.highest(high, 5) + 0.2 * atr) - close, atr), 2.5 * atr)
+
+// Pick the lot count (0.01, 0.02, ...) that keeps risk in $5-6 with the stop unchanged.
+// If no lot count fits, use fewer lots and WIDEN the stop (never tighten it).
+fitSize(float d0) =>
+    unitRisk = unitStep * d0 * quoteUsd
+    ideal = riskUsd / unitRisk
+    n1 = math.floor(ideal)
+    n2 = math.ceil(ideal)
+    r1 = n1 * unitRisk
+    r2 = n2 * unitRisk
+    ok1 = n1 >= 1 and r1 >= 5 and r1 <= 6
+    ok2 = n2 >= 1 and r2 >= 5 and r2 <= 6
+    float q = 0.0
+    float d = d0
+    if ok1 and ok2
+        q := math.abs(r1 - riskUsd) <= math.abs(r2 - riskUsd) ? n1 * unitStep : n2 * unitStep
+    else if ok1
+        q := n1 * unitStep
+    else if ok2
+        q := n2 * unitStep
+    else
+        nw = math.ceil(5 / unitRisk - 1e-9) - 1
+        if nw >= 1
+            q := nw * unitStep
+            d := riskUsd / (q * quoteUsd)
+    [q, d]
+
+[lQty, lDist] = fitSize(lDist0)
+[sQty, sDist] = fitSize(sDist0)
 lRisk = lQty * lDist * quoteUsd
 sRisk = sQty * sDist * quoteUsd
 lTp   = lQty > 0 ? rewardUsd / (lQty * quoteUsd) : na
@@ -118,8 +145,8 @@ sSup   = nearestBelow(plV, close - 0.25 * atr)
 lPath  = na(lRes) or lRes >= close + lTp or (lRes - close) >= 0.5 * lTp
 sPath  = na(sSup) or sSup <= close - sTp or (close - sSup) >= 0.5 * sTp
 // $5-6 risk after rounding to the lot step, and position within the leverage limit
-lAfford = lQty > 0 and lRisk >= 5 and lRisk <= 6 and lQty * close * quoteUsd <= capital * maxLev
-sAfford = sQty > 0 and sRisk >= 5 and sRisk <= 6 and sQty * close * quoteUsd <= capital * maxLev
+lAfford = lQty > 0 and lDist <= 2.5 * atr * 1.0001 and lRisk >= 5 and lRisk <= 6 and lQty * close * quoteUsd <= capital * maxLev
+sAfford = sQty > 0 and sDist <= 2.5 * atr * 1.0001 and sRisk >= 5 and sRisk <= 6 and sQty * close * quoteUsd <= capital * maxLev
 
 flat = strategy.position_size == 0
 lOk  = tfOk and flat and lTrend and lCount >= 3 and lFam >= 3 and notExt and rsi <= 72 and lPath and lAfford
@@ -134,9 +161,9 @@ if lOk
     slLine := close - lDist
     tpLine := close + lTp
     why = "LONG - why:\n" + (lTrend ? "• Uptrend (above 200 EMA, 50 > 200)\n" : "") + (lPull ? "• Pullback to 20 EMA & bounced\n" : "") +
-         (lMom ? "• RSI " + str.tostring(rsi, "#.0") + " rising\n" : "") + (lMacd ? "• MACD hist rising 2 days\n" : "") +
-         (lCandle ? "• Strong bullish candle\n" : "") + (lVol ? "• Volume > 1.2x avg\n" : "") + (lBrk ? "• 20-day breakout\n" : "") +
-         "Self-review: PASS\nSL " + fmt(slLine) + " (-$" + str.tostring(lRisk, "#.00") + ", " + str.tostring(lDist / pip, "#") + " pips)  TP " + fmt(tpLine) + " (+$" + str.tostring(rewardUsd) + ", " + str.tostring(lTp / pip, "#") + " pips)\nQty " + str.tostring(lQty, "#.##") + " units"
+         (lMom ? "• RSI " + str.tostring(rsi, "#.0") + " rising\n" : "") + (lMacd ? "• MACD hist rising 2 candles\n" : "") +
+         (lCandle ? "• Strong bullish candle\n" : "") + (lVol ? "• Volume > 1.2x avg\n" : "") + (lBrk ? "• 20-candle breakout\n" : "") +
+         "Self-review: PASS\nSL " + fmt(slLine) + " (-$" + str.tostring(lRisk, "#.00") + ", " + str.tostring(lDist / pip, "#") + " pips)  TP " + fmt(tpLine) + " (+$" + str.tostring(rewardUsd) + ", " + str.tostring(lTp / pip, "#") + " pips)\nSize " + str.tostring(lQty / 100000, "#.##") + " lots"
     strategy.entry("Long", strategy.long, qty = lQty, comment = "3+ reasons")
     strategy.exit("Long exit", "Long", stop = slLine, limit = tpLine)
     label.new(bar_index, low, why, style = label.style_label_up, color = color.new(color.green, 15), textcolor = color.white, size = size.small)
@@ -146,9 +173,9 @@ if sOk
     slLine := close + sDist
     tpLine := close - sTp
     why = "SHORT - why:\n" + (sTrend ? "• Downtrend (below 200 EMA, 50 < 200)\n" : "") + (sPull ? "• Rally into 20 EMA & rejected\n" : "") +
-         (sMom ? "• RSI " + str.tostring(rsi, "#.0") + " falling\n" : "") + (sMacd ? "• MACD hist falling 2 days\n" : "") +
-         (sCandle ? "• Strong bearish candle\n" : "") + (sVol ? "• Volume > 1.2x avg\n" : "") + (sBrk ? "• 20-day breakdown\n" : "") +
-         "Self-review: PASS\nSL " + fmt(slLine) + " (-$" + str.tostring(sRisk, "#.00") + ", " + str.tostring(sDist / pip, "#") + " pips)  TP " + fmt(tpLine) + " (+$" + str.tostring(rewardUsd) + ", " + str.tostring(sTp / pip, "#") + " pips)\nQty " + str.tostring(sQty, "#.##") + " units"
+         (sMom ? "• RSI " + str.tostring(rsi, "#.0") + " falling\n" : "") + (sMacd ? "• MACD hist falling 2 candles\n" : "") +
+         (sCandle ? "• Strong bearish candle\n" : "") + (sVol ? "• Volume > 1.2x avg\n" : "") + (sBrk ? "• 20-candle breakdown\n" : "") +
+         "Self-review: PASS\nSL " + fmt(slLine) + " (-$" + str.tostring(sRisk, "#.00") + ", " + str.tostring(sDist / pip, "#") + " pips)  TP " + fmt(tpLine) + " (+$" + str.tostring(rewardUsd) + ", " + str.tostring(sTp / pip, "#") + " pips)\nSize " + str.tostring(sQty / 100000, "#.##") + " lots"
     strategy.entry("Short", strategy.short, qty = sQty, comment = "3+ reasons")
     strategy.exit("Short exit", "Short", stop = slLine, limit = tpLine)
     label.new(bar_index, high, why, style = label.style_label_down, color = color.new(color.red, 15), textcolor = color.white, size = size.small)
@@ -163,4 +190,4 @@ plot(inTrade ? slLine : na, "Stop loss",   color.red,   2, plot.style_linebr)
 plot(inTrade ? tpLine : na, "Take profit", color.green, 2, plot.style_linebr)
 
 if barstate.islast and not tfOk
-    label.new(bar_index, high, "Switch to the DAILY chart - this strategy does not scalp.", color = color.orange, textcolor = color.black)
+    label.new(bar_index, high, "Switch to the 4h (H4) chart - this strategy only trades 4-hour candles.", color = color.orange, textcolor = color.black)

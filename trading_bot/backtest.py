@@ -1,6 +1,6 @@
-"""Backtest the exact same strategy + self-review + risk rules on daily history.
+"""Backtest the exact same strategy + self-review + risk rules on 4-hour candles.
 
-Entry at the signal day's close, exits checked on following daily candles
+Entry at the signal candle's close, exits checked on following 4h candles
 (stop assumed first if SL and TP are both touched in one candle; gaps through
 the stop fill at the open). Fixed $ risk per trade, one trade at a time.
 """
@@ -17,11 +17,11 @@ from .risk import RiskGuard, RuleViolation
 from .strategy import evaluate
 
 
-def backtest(symbol: str, source: str = "yfinance", years: int = 5, verbose: bool = True) -> dict:
+def backtest(symbol: str, source: str = "yfinance", years: int = 2, verbose: bool = True) -> dict:
     rules = config.rules_for_capital(config.STARTING_CAPITAL)
     guard = RiskGuard(rules)
     md = MarketData(source)
-    df = md.daily(symbol, years=years)
+    df = md.bars(symbol, n=years * 6 * 260)
     quote_usd = md.quote_usd(symbol)  # today's rate, used for the whole test (approximation)
     step = config.FOREX_UNIT_STEP if is_forex(symbol) else None
     tmp = Path(tempfile.mkdtemp()) / "bt.json"
@@ -33,12 +33,13 @@ def backtest(symbol: str, source: str = "yfinance", years: int = 5, verbose: boo
         if broker.position:
             t = broker.check_exit(bar.High, bar.Low, bar.Open, when=df.index[i])
             if t and verbose:
-                print(f"{df.index[i].date()} CLOSE {t['side']:5} {t['exit_reason']:18} P&L ${t['pnl']:+.2f}")
+                print(f"{str(df.index[i])[:16]} CLOSE {t['side']:5} {t['exit_reason']:18} P&L ${t['pnl']:+.2f}")
             continue
         setups, _ = evaluate(symbol, df.iloc[: i + 1], rules, config.ALLOW_SHORTS)
         for s in setups:
             try:
-                plan = guard.size(symbol, s.side, s.entry, s.stop, quote_usd=quote_usd, qty_step=step)
+                plan = guard.size(symbol, s.side, s.entry, s.stop, quote_usd=quote_usd, qty_step=step,
+                                  min_qty=step, max_stop_dist=rules.max_stop_atr * s.atr)
             except RuleViolation:
                 skipped_rules += 1
                 continue
@@ -48,8 +49,8 @@ def backtest(symbol: str, source: str = "yfinance", years: int = 5, verbose: boo
                 continue
             broker.open_position(plan, [r.text for r in s.reasons], when=df.index[i])
             if verbose:
-                print(f"{df.index[i].date()} OPEN  {s.side:5} @ {plan.entry:,.2f} SL {plan.stop:,.2f} "
-                      f"TP {plan.take_profit:,.2f}  reasons: {', '.join(r.key for r in s.reasons)}")
+                print(f"{str(df.index[i])[:16]} OPEN  {s.side:5} @ {plan.entry:,.5f} SL {plan.stop:,.5f} "
+                      f"TP {plan.take_profit:,.5f}  reasons: {', '.join(r.key for r in s.reasons)}")
             break
 
     closed = broker.state["closed"]

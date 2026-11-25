@@ -87,6 +87,32 @@ class TestForex(unittest.TestCase):
         self.assertEqual(p.qty, 1000)
 
 
+class TestLotFitting(unittest.TestCase):
+    """0.01-lot brokers (MT5): risk must still land in $5-6, stops only ever widen."""
+    def setUp(self):
+        self.guard = RiskGuard(rules_for_capital(200))
+
+    def test_user_chart_gbpusd_short(self):
+        # SL 1.31257 above entry 1.31067 (19 pips) -> 0.03 lots, $5.70 risk, TP 35 pips for $10.50
+        p = self.guard.size("GBPUSD", "short", 1.31067, 1.31257, qty_step=1000, min_qty=1000)
+        self.assertEqual(p.qty, 3000)
+        self.assertEqual(p.stop, 1.31257)
+        self.assertAlmostEqual(p.take_profit, 1.30717, places=5)
+
+    def test_every_stop_size_stays_in_limits(self):
+        for pips in range(8, 120):
+            d = pips * 0.0001
+            try:
+                p = self.guard.size("EURUSD", "long", 1.1, 1.1 - d, qty_step=1000, min_qty=1000,
+                                    max_stop_dist=0.0120)
+            except RuleViolation:
+                continue
+            self.assertTrue(5 <= p.risk_usd <= 6, (pips, p))
+            self.assertTrue(9 <= p.reward_usd <= 12, (pips, p))
+            self.assertGreaterEqual(1.1 - p.stop, d - 1e-12)  # never tighter than the strategy's stop
+            self.assertEqual(p.qty % 1000, 0)
+
+
 class TestBroker(unittest.TestCase):
     def test_stop_first_when_both_hit_and_single_position(self):
         guard = RiskGuard(rules_for_capital(200))
@@ -120,7 +146,7 @@ class TestReview(unittest.TestCase):
 class TestStrategy(unittest.TestCase):
     def test_setups_always_have_3_reasons_and_anchor(self):
         rules = rules_for_capital(200)
-        df = MarketData("synthetic").daily("BTC-USD")
+        df = MarketData("synthetic").bars("BTC-USD", n=600)
         for i in range(250, len(df), 7):
             setups, _ = evaluate("BTC-USD", df.iloc[:i], rules)
             for s in setups:

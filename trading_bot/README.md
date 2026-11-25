@@ -1,92 +1,77 @@
-# Rule-Based Swing Trading Bot ($200 account)
+# Rule-Based Forex Swing Bot ($200 account, 4-hour candles)
 
-A **paper-trading** bot that follows strict rules and explains every decision in plain English.
+Trades **AUDCHF, GBPUSD and EURUSD** on the **4-hour (H4) chart only**. It explains every decision in plain English.
+It runs in **paper mode** by default. It can also send orders with the stop loss and take profit attached to your **MetaTrader 5** account. They appear on the MT5 phone chart as the two red SL/TP lines.
 
 ## The rules (enforced in code, can't be switched off)
 
 | Rule | How it's enforced |
 |---|---|
-| Risk per trade **$5–6** (stop loss) | `RiskGuard` sizes every position to risk $5.50. Any plan outside $5–6 is rejected. |
-| Profit target **$9–12** | Take profit is set to +$10.50 (≈1.9 : 1 reward:risk). Rejected if outside $9–12. |
-| **One trade at a time** | Checked before scanning and again right before the order. The broker refuses a second position. |
-| **No scalping** | Signals use **daily** candles only. The stop must be at least 1 daily ATR away. |
-| **Once a day at 9:00** | Main scan runs once a day at 09:00 (`TIMEZONE` in `config.py`). |
-| **Huge moves allowed** | Every hour it checks for a move of ≥1.5 daily ATR **plus** a 20-day breakout. It still needs 3+ reasons and has to pass the self-review. |
-| **3-reason rule** | It needs at least 3 reasons from **3 different kinds** of evidence (trend / price location / momentum / confirmation), so the same idea said three ways doesn't count. |
-| **Check reasoning first** | A self-review argues against the trade (overextended? overbought? resistance in the way of the TP? stale data?). Any failed check means **no trade**. |
-| **Explain every trade** | Opens, closes and skipped setups are all written to `journal/trades.md`. |
+| Risk per trade **$5–6** (stop loss) | `RiskGuard` sizes every trade to $5–6. Any plan outside that range is rejected. |
+| Profit target **$9–12** | Take profit is set to +$10.50. Rejected if outside $9–12. |
+| **One trade at a time** | Checked before scanning and again right before the order. With MT5 it counts *every* open position on the account, including ones you opened by hand. |
+| **4-hour candles only** | All signals use completed H4 candles. The stop must be ≥ 1 ATR of the 4-hour chart, so it never scalps. The TradingView script refuses to run on any other timeframe. |
+| **9:00 scan** | The main scan runs once a day at 09:00 (`TIMEZONE` in `config.py`). |
+| **Huge moves allowed** | Every hour it checks the 4-hour candle that's still forming for a move of ≥1.5 ATR **plus** a 20-candle breakout. It still needs 3+ reasons and the self-review. |
+| **3-reason rule** | At least 3 reasons from **3 different kinds** of evidence: trend / price location / momentum / candle confirmation. |
+| **Check reasoning first** | A self-review argues against the trade: overextended? overbought? a level blocking the TP? stale data? Any fail means **no trade**. |
+| **Explain every trade** | Opens, closes and skipped setups are written to `journal/trades.md`. |
 
-The rules live in `config.py`. `RiskRules.validate()` won't start the bot if someone loosens them, for example by allowing 2 trades or only 2 reasons.
-If you change `STARTING_CAPITAL`, the dollar limits scale by the same percentages (2.5–3% risk, 4.5–6% reward).
+## How it sizes a trade with 0.01 lots (MT5)
+On GBPUSD/EURUSD, 0.01 lot is about $0.10 per pip. The bot picks the lot count that keeps the risk at $5–6:
 
-## Strategy: Trend Pullback + Confluence (swing, daily candles)
+| Stop (pips) | Lots | Risk | Take profit for $10.50 |
+|---|---|---|---|
+| 10 | 0.05 | $5.00 | 21 pips |
+| 19 (your GBPUSD chart) | 0.03 | $5.70 | 35 pips |
+| 30 | 0.02 | $6.00 | 52.5 pips |
+| 40 | 0.01 | stop widened to 55 → $5.50 | 105 pips |
 
-For a **long** trade (shorts are the mirror image), it looks for:
-1. **Trend (required):** price above the 200 EMA and the 50 EMA above the 200 EMA
-2. **Pullback:** price dipped to the 20 EMA and closed back above it
-3. **Momentum:** RSI 40–65 and rising
-4. **MACD:** histogram rising 2 days in a row
-5. **Candle:** strong green close in the top third of the day's range
-6. **Volume:** above 1.2× the 20-day average
-7. **Breakout:** close above the prior 20-day high
+If no lot count fits, it **widens** the stop a little, up to the 2.5 ATR maximum, and says so in the journal. It never tightens a stop.
+The TP is always set by **dollars** ($9–12), not by drawing to the next level. On your GBPUSD chart (short at 1.31067, SL 1.31257), the bot would use 0.03 lots with TP **1.30717**, not 1.30181. A TP at 1.30181 would be about $26, which breaks the $9–12 rule.
 
-The stop goes just past the last 5 days' swing low, kept between 1 and 2.5 daily ATR away.
-Position size = $5.50 ÷ stop distance. If more than one market qualifies, it takes the one with the most independent reasons.
+## Strategy: Trend Pullback + Confluence (4-hour candles)
+For a **short** (longs are the mirror image), it looks for:
+1. **Trend (required):** price below the 200 EMA and the 50 EMA below the 200 EMA
+2. **Pullback:** price rallied into the 20 EMA in the last 3 candles and closed back below it
+3. **Momentum:** RSI 35–60 and falling
+4. **MACD:** histogram falling 2 candles in a row
+5. **Candle:** strong red close in the bottom third of its range
+6. **Volume:** tick volume above 1.2× its average (MT5 data only; Yahoo has no forex volume)
+7. **Breakout:** close below the prior 20-candle low
 
-## Example journal entry
-```
-## 2026-11-25 14:00 UTC - OPENED SHORT ETH-USD (daily strategy)
-Why I took this trade:
-  1. Downtrend: close 2,903.02 below 200 EMA 3,242.81, 50 EMA below 200 EMA.
-  2. RSI 36.8 falling from the neutral zone (not oversold).
-  3. MACD histogram has fallen 2 days in a row (momentum turning down).
-  4. Strong bearish candle: closed in the bottom 3% of the day's range.
-Self-review before entering:
-  [PASS] 3-reason rule: 4 reasons found.
-  [PASS] Reasons are independent: 4 different kinds ...
-  [PASS] Not a scalp: stop is 1.44 daily ATRs away (min 1.0).
-  [PASS] Path to TP: no recent level blocking the target.
-  ...
-Plan: 0.0187 @ 2,903.02 | SL 3,197.14 (-$5.50) | TP 2,341.50 (+$10.50) | position $54.29
-```
+The stop goes beyond the last 5 candles' swing high, between 1 and 2.5 ATR away.
 
-## Setup & usage
+## Setup
+
+### Option A – paper trading on any computer (start here)
 ```bash
 pip install -r trading_bot/requirements.txt
-
 python -m trading_bot.bot run       # leave running: 9am scan + hourly watch
-python -m trading_bot.bot scan      # run the daily scan right now
-python -m trading_bot.bot watch     # check open trade / huge moves right now
 python -m trading_bot.bot status    # equity, open trade and its reasons
-python -m trading_bot.bot backtest --symbol BTC-USD    # test the same rules on 5 years of data
-python -m unittest discover -s trading_bot/tests -t .  # prove the rules hold
+python -m trading_bot.bot backtest --symbol GBPUSD   # same rules on ~2 years of 4h candles
 ```
-Edit `WATCHLIST`, `TIMEZONE` and `ALLOW_SHORTS` in `config.py`. It accepts any Yahoo Finance ticker: crypto, stocks, ETFs, forex (`EURUSD=X`), futures (`GC=F`).
 
-## Trading forex (AUDCHF, GBPUSD, EURUSD)
-The watchlist is set to `AUDCHF=X`, `GBPUSD=X` and `EURUSD=X`.
-- **Dollar risk stays $5–6 on every pair.** AUDCHF is priced in Swiss francs, so the bot converts CHF to USD before sizing.
-- **Leverage up to 10x** (`MAX_LEVERAGE`). With a $200 account, a normal 60–80 pip EURUSD stop needs a position of ~$800–900 to risk $5.50. Leverage only sets the position size; the stop still limits the loss to $5–6.
-- **Lot size (`FOREX_UNIT_STEP`) – check your broker.**
-  - `1` (default): brokers that allow any number of units, e.g. OANDA. This works well with $200.
-  - `1000`: MT4/MT5 brokers with a 0.01-lot minimum. One micro lot of EURUSD is about $0.10 per pip, so a $5–6 risk means the stop must be exactly 50–60 pips. In testing, almost every setup failed that, so the bot hardly trades. With a 0.01-lot broker, either add money so there's room to size, or accept very few trades.
-- Example journal line: `Forex: 786 units (0.008 lots) | SL 70 pips | TP 134 pips | leverage 4.3x on $200`.
-- Yahoo has no forex volume, so the "volume" reason is never used for these pairs. Trades need 3 of the other reasons.
-- Holding a trade overnight costs a small daily fee called swap or rollover. Neither the bot nor the backtest counts it.
-- In TradingView, set the **"Position size step"** input to match your broker (1 or 1000).
+### Option B – trade on your MT5 account (Windows PC or Windows VPS)
+The MT5 phone app can't be controlled by other programs. The bot needs the **MT5 desktop terminal** running on Windows, logged in to the same account. Trades it places then show up on your phone with the SL/TP lines.
+1. Install MT5 desktop from your broker, log in, and **use a DEMO account first**.
+2. In MT5: **Tools → Options → Expert Advisors →** tick **Allow algorithmic trading**. Then make sure the **Algo Trading** button is green.
+3. `pip install -r trading_bot/requirements.txt MetaTrader5`
+4. If your broker's symbols have a suffix (e.g. `GBPUSDm`), set `MT5_SYMBOL_SUFFIX = "m"` in `config.py`.
+5. Run: `python -m trading_bot.bot run --source mt5 --broker mt5`
+
+MT5 closes the trade at SL or TP by itself. The bot records the result, including swap and commission, in the journal.
+
+## Practise on TradingView
+`tradingview/three_reason_swing.pine` is the same strategy and the same rules in Pine Script.
+1. Open a **4h** chart (GBPUSD, EURUSD, AUDCHF) in TradingView → **Pine Editor** → paste → **Save** → **Add to chart**.
+2. **Strategy Tester** shows every past trade, the win rate and the P&L from $200. Each entry has a label listing its reasons, SL/TP in pips, and lot size.
+3. Set **"Position size step"** to 1000 for MT5 (0.01 lots) or 1 for brokers that allow any size.
+4. **Add alert** on the strategy to get notified, then place the same trade on MT5 demo or TradingView Paper Trading.
 
 ## Important notes
-- **Paper trading only for now.** Run it for a few weeks and read the journal before risking real money. To go live, add a broker class with the same methods as `PaperBroker`. Use bracket/OCO orders so the stop loss sits at the broker, not just in this script.
-- **Why $200 limits which markets qualify:** with no leverage, a $5.50 risk needs a stop at least ~2.75% away (5.50 / 200). Volatile markets like crypto, TSLA and NVDA fit easily. Calm ones like SPY often get rejected with "stop too tight for this account". That's the risk rule doing its job.
-- **US stocks at 9:00 New York time** are before the 9:30 open, so the paper fill uses the latest price. Set the scan to 09:45 if you mostly trade US stocks.
-- A stop loss can't stop a **gap**. If the price jumps past your stop overnight, the loss can be a bit more than $6. The backtest models this.
+- **Leverage:** on 4-hour candles, a $5.50 risk with a 15–40 pip stop means a position of ~$1,500–4,000 on a $200 account (`MAX_LEVERAGE = 30`). Leverage only changes position size; the stop still caps the loss at $5–6. Your broker must allow at least 1:30.
+- **Gaps:** a stop loss can't stop a weekend gap. The loss can then be a little over $6. The backtest models this.
+- **Swap:** holding forex overnight costs or pays a small daily fee. The backtest ignores it; MT5 results include it.
+- **Yahoo vs MT5 candles:** Yahoo 4h candles start at 00/04/08… UTC, while your MT5 chart uses broker server time. Signals can differ slightly. `--source mt5` uses exactly your MT5 candles.
 - No strategy wins every trade. At ~1.9 : 1 reward:risk, the break-even win rate is about 35%. Past results don't guarantee future results.
-
-## Practise on TradingView first
-`tradingview/three_reason_swing.pine` is the same strategy and the same rules in Pine Script.
-1. Open a **Daily** chart on TradingView (e.g. BTCUSD, ETHUSD, TSLA).
-2. Open **Pine Editor** at the bottom, paste the file, then click **Save** and **Add to chart**.
-3. **Strategy Tester** shows every past trade, the win rate and the P&L, starting from $200. Each entry has a label on the chart that lists its reasons.
-4. To practise live: right-click the chart, choose **Add alert**, and pick this strategy. When an alert says "LONG - why: ...", place that trade with the same SL and TP in **Trading Panel → Paper Trading**.
-
-TradingView doesn't let outside programs place orders, so the Pine script is for practice and alerts. The Python bot is the one that can trade automatically later.
